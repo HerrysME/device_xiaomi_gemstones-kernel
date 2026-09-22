@@ -312,7 +312,16 @@ proc_dolongvec_minmax_bpf_restricted(struct ctl_table *table, int write,
 }
 #endif
 
+int sysctl_hide_tun __read_mostly = 1;
+
 static struct ctl_table net_core_table[] = {
+	{
+		.procname	= "hide_tun",
+		.data		= &sysctl_hide_tun,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
 	{
 		.procname	= "wmem_max",
 		.data		= &sysctl_wmem_max,

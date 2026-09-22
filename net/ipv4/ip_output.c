@@ -285,9 +285,28 @@ static int ip_finish_output_gso(struct net *net, struct sock *sk,
 	return ret;
 }
 
+/* tapas-custom: force TTL on all egress IPv4 packets (local + forwarded)
+ * so tethered traffic is indistinguishable from on-device traffic.
+ * Carriers that detect tethering by comparing TTL hops can no longer
+ * tell a NATed client from the phone itself.
+ *
+ * 65 is a "one hop above the common Linux default (64)" value.
+ * The IP header checksum is recomputed after the change (TTL is not
+ * covered by L4 checksums, so TCP/UDP checksums stay valid).
+ *
+ * Note: this covers IPv4 only; IPv6 hop-limit is left untouched.
+ */
+#define TAPAS_FORCE_TTL 65
+
 static int __ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	unsigned int mtu;
+	struct iphdr *iph = ip_hdr(skb);
+
+	if (iph->ttl != TAPAS_FORCE_TTL) {
+		iph->ttl = TAPAS_FORCE_TTL;
+		ip_send_check(iph);
+	}
 
 #if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
 	/* Policy lookup after SNAT yielded a new policy */

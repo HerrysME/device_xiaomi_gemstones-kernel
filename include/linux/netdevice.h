@@ -634,6 +634,7 @@ struct netdev_queue {
 
 extern int sysctl_fb_tunnels_only_for_init_net;
 extern int sysctl_devconf_inherit_init_net;
+extern int sysctl_hide_tun;
 
 /*
  * sysctl_fb_tunnels_only_for_init_net == 0 : For all netns

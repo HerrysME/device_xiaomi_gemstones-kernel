@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# ChicKernel KSU-Next + SuSFS + tapas (Xiaomi Redmi Note 12 4G)
+# Merges: chickernel_defconfig + ksun.susfs.config + tapas.config
+. ${ROOT_DIR}/${KERNEL_DIR}/build.config.common
+. ${ROOT_DIR}/${KERNEL_DIR}/build.config.aarch64
+. ${ROOT_DIR}/${KERNEL_DIR}/build.config.gki
+. ${ROOT_DIR}/${KERNEL_DIR}/build.config.gki.aarch64
+
+DEFCONFIG_PATH=${ROOT_DIR}/${KERNEL_DIR}/arch/arm64/configs
+
+BUILD_SYSTEM_DLKM=0
+BUILD_GKI_ARTIFACTS=0
+BUILD_GKI_CERTIFICATION_TOOLS=0
+
+DEFCONFIG=chickernel_defconfig
+FRAGMENT_CONFIG=${DEFCONFIG_PATH}/chickernel-variants/ksun.susfs.config
+TAPAS_FRAGMENT_CONFIG=${DEFCONFIG_PATH}/chickernel-variants/tapas.config
+
+PRE_DEFCONFIG_CMDS="
+cp ${DEFCONFIG_PATH}/${DEFCONFIG} ${DEFCONFIG_PATH}/.tmp.${DEFCONFIG}; \
+KCONFIG_CONFIG=${DEFCONFIG_PATH}/${DEFCONFIG} ${ROOT_DIR}/${KERNEL_DIR}/scripts/kconfig/merge_config.sh -m -r \
+${DEFCONFIG_PATH}/${DEFCONFIG} \
+${FRAGMENT_CONFIG} ${TAPAS_FRAGMENT_CONFIG}
+"
+
+POST_DEFCONFIG_CMDS="
+mv ${DEFCONFIG_PATH}/.tmp.${DEFCONFIG} ${DEFCONFIG_PATH}/${DEFCONFIG}
+"

@@ -102,14 +102,20 @@ static void dev_seq_printf_stats(struct seq_file *seq, struct net_device *dev)
  */
 static int dev_seq_show(struct seq_file *seq, void *v)
 {
-	if (v == SEQ_START_TOKEN)
+	if (v == SEQ_START_TOKEN) {
 		seq_puts(seq, "Inter-|   Receive                            "
 			      "                    |  Transmit\n"
 			      " face |bytes    packets errs drop fifo frame "
 			      "compressed multicast|bytes    packets errs "
 			      "drop fifo colls carrier compressed\n");
-	else
+	} else {
+		struct net_device *dev = v;
+
+		/* tapas-custom: hide tunX from /proc/net/dev (VPN detection) */
+		if (sysctl_hide_tun && !strncmp(dev->name, "tun", 3))
+			return 0;
 		dev_seq_printf_stats(seq, v);
+	}
 	return 0;
 }
 

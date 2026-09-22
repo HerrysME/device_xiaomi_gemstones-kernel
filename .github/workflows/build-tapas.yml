@@ -1,0 +1,266 @@
+name: Build tapas kernel
+
+# ChicKernel tapas-custom (Xiaomi Redmi Note 12 4G) — KSU-Next + SuSFS
+# Adapted from chickendrop89/ack-build-workflow (GPL-3.0)
+#
+# Usage:
+#   1. Fork https://github.com/ChicKernel/device_xiaomi_gemstones-kernel
+#   2. Push the tapas-custom branch (and this workflow) to your fork
+#   3. Actions tab -> "Build tapas kernel" -> Run workflow
+#
+# Outputs: AnyKernel3 zip + raw kernel images, plus a GitHub Release
+# when the run was triggered by a v* tag.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_repo:
+        description: 'Custom kernel repository'
+        required: true
+        default: ''
+        type: string
+      kernel_branch:
+        description: 'Custom kernel repository branch'
+        required: true
+        default: 'tapas-custom'
+        type: string
+      modem_tier:
+        description: 'Modem removal tier: full (may kill audio) | safe (data+NFC only)'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - safe
+      ttl:
+        description: 'Forced IPv4 TTL (0 = normalize to default 64)'
+        required: true
+        default: '65'
+        type: string
+      use_latest_clang:
+        description: 'Use the latest clang prebuilts'
+        required: true
+        default: true
+        type: boolean
+      fast_build:
+        description: 'Fast build (thinLTO, fewer optimizations)'
+        required: true
+        default: true
+        type: boolean
+      use_kleaf:
+        description: 'Use kleaf (bazel) instead of build.sh'
+        required: true
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+env:
+  ACK_BRANCH: common-android13-5.15
+  KERNEL_REPO: ${{ inputs.kernel_repo || format('https://github.com/{0}', github.repository) }}
+  KERNEL_BRANCH: ${{ inputs.kernel_branch || 'tapas-custom' }}
+  MODEM_TIER: ${{ inputs.modem_tier || 'full' }}
+  TTL: ${{ inputs.ttl || '65' }}
+  USE_LATEST_CLANG: ${{ inputs.use_latest_clang != false }}
+  FAST_BUILD: ${{ inputs.fast_build != false }}
+  USE_KLEAF: ${{ inputs.use_kleaf == true }}
+  BUILD_CONFIG: build.config.gki.aarch64.chickernel.ksun.susfs.tapas
+  KLEAF_TARGET: chickernel_ksun_susfs_tapas
+  AK3_URL: https://github.com/ChicKernel/AnyKernel3
+  AK3_DIR: ${{ github.workspace }}/kernel-build/anykernel3
+  FINAL_DIR: ${{ github.workspace }}/kernel-build/final_images
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Setup build workspace and a local manifest
+        env:
+          CUSTOM_MANIFEST: .repo/local_manifests/custom.xml
+        run: |
+          REPO_SOURCE=$(echo ${KERNEL_REPO} | cut -d'/' -f3)
+          REPO_OWNER=$(echo ${KERNEL_REPO} | cut -d'/' -f4)
+          REPO_NAME=$(echo ${KERNEL_REPO} | cut -d'/' -f5)
+
+          mkdir kernel-build && cd $_
+          mkdir -p .repo/local_manifests
+
+          mecho() {
+            echo "$1" >> "${CUSTOM_MANIFEST}"
+          }
+
+          mecho '<?xml version="1.0" encoding="UTF-8"?>'
+          mecho '<manifest>'
+          mecho "  <remote name=\"common-repo\" fetch=\"https://${REPO_SOURCE}/${REPO_OWNER}\" />"
+          mecho ''
+          mecho '  <remove-project name="kernel/common" />'
+          mecho "  <project path=\"common\" name=\"${REPO_NAME}\" remote=\"common-repo\" revision=\"${KERNEL_BRANCH}\" >"
+          mecho '    <linkfile src="." dest=".source_date_epoch_dir" />'
+          mecho '  </project>'
+
+          if [ "${USE_LATEST_CLANG}" = true ]; then
+            mecho '  <remove-project name="platform/prebuilts/clang/host/linux-x86" />'
+            mecho '  <project path="prebuilts/clang/host/linux-x86" name="platform/prebuilts/clang/host/linux-x86" revision="main" clone-depth="1" />'
+          fi
+
+          mecho '</manifest>'
+
+      - name: Download build utilities
+        working-directory: kernel-build
+        run: |
+          git clone --depth=1 ${AK3_URL} "${AK3_DIR}"
+
+          mkdir -p ~/.bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
+          chmod a+rx ~/.bin/repo
+          echo "${HOME}/.bin" >> ${GITHUB_PATH}
+
+      - name: Clean up container
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Initialize the manifest, and sync
+        working-directory: kernel-build
+        run: |
+          repo init \
+            --no-tags \
+            --depth=1 \
+            --dissociate \
+            -u https://android.googlesource.com/kernel/manifest \
+            -b ${ACK_BRANCH}
+
+          repo sync \
+            --no-tags \
+            --clone-bundle \
+            --current-branch \
+            --optimized-fetch \
+            --force-sync \
+            --fetch-submodules \
+            -j$(nproc --all)
+
+      - name: Apply build customizations (modem tier, TTL)
+        working-directory: kernel-build/common
+        run: |
+          # Modem blacklist tier
+          if [ "${MODEM_TIER}" = "safe" ]; then
+            sed -Ei 's/(module_blacklist=)[^"]*/\1ipa3,ipa,rmnet_core,rmnet_ctl,rmnet_perf,rmnet_dlc,datactl,dpl,nq-nci,nq_nci/' \
+              arch/arm64/configs/chickernel-variants/tapas.config
+          fi
+          # "full" keeps the committed blacklist as-is
+
+          # TTL override
+          if [ "${TTL}" != "65" ] && [ "${TTL}" != "0" ]; then
+            sed -i "s/#define TAPAS_FORCE_TTL 65/#define TAPAS_FORCE_TTL ${TTL}/" \
+              net/ipv4/ip_output.c
+          elif [ "${TTL}" = "0" ]; then
+            sed -i 's/#define TAPAS_FORCE_TTL 65/#define TAPAS_FORCE_TTL 64/' \
+              net/ipv4/ip_output.c
+            echo "::warning::TTL=0 normalizes to 64 (Linux default) instead of disabling"
+          fi
+
+          git diff || true
+
+      - name: Build the kernel
+        working-directory: kernel-build
+        env:
+          OUT_DIR: ${{ github.workspace }}/kernel-build/out
+        run: |
+          mkdir -p "${FINAL_DIR}"
+
+          if [ "${USE_KLEAF}" = true ]; then
+            if [ "${FAST_BUILD}" = true ]; then
+              tools/bazel build --config=fast //common:${KLEAF_TARGET}
+            else
+              tools/bazel build //common:${KLEAF_TARGET}
+            fi
+            cp -f bazel-bin/common/${KLEAF_TARGET}/Image "${FINAL_DIR}/Image"
+            gzip -n -9 -kc "${FINAL_DIR}/Image" > "${FINAL_DIR}/Image.gz"
+          else
+            if [ "${FAST_BUILD}" = true ]; then
+              export FAST_BUILD=1
+            fi
+            BUILD_CONFIG=common/${BUILD_CONFIG} build/build.sh
+            cp -f out/dist/Image out/dist/Image.gz out/dist/Image.lz4 "${FINAL_DIR}/" 2>/dev/null || true
+            cp -f out/dist/System.map "${FINAL_DIR}/" 2>/dev/null || true
+          fi
+
+          if [ ! -f "${FINAL_DIR}/Image" ]; then
+            echo "::error::Kernel image was not produced"
+            exit 1
+          fi
+
+      - name: Verify the built configuration
+        working-directory: kernel-build
+        run: |
+          KCONFIG=$(find out -name .config 2>/dev/null | head -1)
+          if [ -z "${KCONFIG}" ]; then
+            echo "::warning::.config not found, skipping config verification"
+            exit 0
+          fi
+
+          fail=0
+          check_on()  { grep -q "^$1=y"    "${KCONFIG}" || { echo "::error::$1 is not enabled";  fail=1; }; }
+          check_off() { grep -q "^# $1 is not set" "${KCONFIG}" || { echo "::error::$1 is not disabled"; fail=1; }; }
+
+          check_on  CONFIG_SQUASHFS
+          check_on  CONFIG_BTRFS_FS
+          check_on  CONFIG_NTFS3_FS
+          check_on  CONFIG_UDF_FS
+          check_on  CONFIG_HFSPLUS_FS
+          check_on  CONFIG_CIFS
+          check_on  CONFIG_KSU
+          check_off CONFIG_NFC
+          check_off CONFIG_GNSS
+
+          grep "CONFIG_CMDLINE=" "${KCONFIG}" | grep -q "module_blacklist=" || \
+            { echo "::error::module_blacklist missing from CONFIG_CMDLINE"; fail=1; }
+
+          exit ${fail}
+
+      - name: Package with AnyKernel3
+        working-directory: kernel-build
+        run: |
+          VERSION="tapas-$(date +%Y%m%d-%H%M)"
+          SHA=$(git -C common rev-parse --short HEAD)
+
+          cp -r "${AK3_DIR}" "${AK3_DIR}-tapas"
+          cd "${AK3_DIR}-tapas"
+          cp "${FINAL_DIR}/Image" Image
+
+          zip -r9 "${FINAL_DIR}/ChicKernel-${VERSION}-${SHA}.zip" * -x .git README.md *placeholder
+
+          cd "${FINAL_DIR}"
+          sha256sum Image Image.gz *.zip > SHA256SUMS 2>/dev/null || sha256sum Image *.zip > SHA256SUMS
+
+          ls -la "${FINAL_DIR}"
+
+      - name: Upload kernel packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChicKernel-tapas
+          path: |
+            kernel-build/final_images/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: kernel-build/final_images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "${TAG}" --title "ChicKernel tapas ${TAG}" \
+            --notes "Automated build of tapas-custom (${TAG}) for Xiaomi Redmi Note 12 4G.
+          Includes: KSU-Next + SuSFS, TTL 65, modem/NFC/GNSS removal, extra filesystems, VPN interface hiding.
+          Flash the AnyKernel3 zip in recovery, or use the raw images with fastboot/magiskboot." \
+            --repo ${GITHUB_REPOSITORY} || true
+
+          gh release upload "${TAG}" ChicKernel-*.zip Image* SHA256SUMS \
+            --repo ${GITHUB_REPOSITORY} || true
