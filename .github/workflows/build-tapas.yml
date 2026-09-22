@@ -29,7 +29,7 @@ on:
         default: 'tapas-custom'
         type: string
       modem_tier:
-        description: 'Modem removal tier: full (may kill audio) | safe (data+NFC only)'
+        description: 'Modem removal tier: full (may kill audio) | safe (cmdline only; kernel block always on)'
         required: true
         default: 'full'
         type: choice
@@ -172,8 +172,10 @@ jobs:
       - name: Apply build customizations (modem tier, TTL)
         working-directory: kernel-build/common
         run: |
-          # Modem blacklist tier
+          # Modem blacklist tier (the compiled-in custom_module_blacklist[]
+          # in kernel/module.c is always active regardless of this tier)
           if [ "${MODEM_TIER}" = "safe" ]; then
+            echo "::warning::safe tier only narrows CONFIG_CMDLINE; the compiled-in custom_module_blacklist[] in kernel/module.c still blocks modem/GNSS/NFC"
             sed -Ei 's/(module_blacklist=)[^"]*/\1ipa3,ipa,rmnet_core,rmnet_ctl,rmnet_perf,rmnet_dlc,datactl,dpl,nq-nci,nq_nci/' \
               arch/arm64/configs/chickernel-variants/tapas.config
           fi
@@ -248,6 +250,29 @@ jobs:
 
           check_on  CONFIG_CMDLINE_EXTEND
 
+          exit ${fail}
+
+      - name: Verify kernel-level radio/GNSS/NFC block
+        working-directory: kernel-build
+        run: |
+          set -e
+          MODULEC=common/kernel/module.c
+          if [ ! -f "${MODULEC}" ]; then
+            echo "::error::${MODULEC} not found"
+            exit 1
+          fi
+          fail=0
+          for m in ipa3 ipa rmnet_core rmnet_ctl rmnet_perf rmnet_dlc \
+                   datactl dpl nq-nci nq_nci qcom_q6v5_pas qrtr qrtr-smd \
+                   qrtr_smd mhi mhi_net; do
+            if ! grep -q "\"${m}\"" "${MODULEC}"; then
+              echo "::error::${m} missing from custom_module_blacklist[] in kernel/module.c"
+              fail=1
+            fi
+          done
+          if [ "${fail}" = 0 ]; then
+            echo "OK: radio/GNSS/NFC modules are hard-blocked at kernel level (compiled-in custom_module_blacklist)"
+          fi
           exit ${fail}
 
       - name: Package with AnyKernel3

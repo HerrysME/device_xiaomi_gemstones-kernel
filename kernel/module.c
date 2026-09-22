@@ -3609,7 +3609,23 @@ static char *custom_module_blacklist[] = {
     "coresight_tgu", "coresight_tmc", "coresight_tpda", "coresight_tpdm",
 #endif
 	"cpufreq_ondemand",
-	"cpufreq_userspace"
+	"cpufreq_userspace",
+	/* tapas-custom: compiled-in radio/GNSS/NFC kill.
+	 *
+	 * These entries live in the kernel image itself, so the block holds
+	 * even if the bootloader cmdline or module_blacklist= is stripped.
+	 * Covers: modem data path (IPA, rmnet, dpl), PAS remoteprocs
+	 * (MPSS modem - killing MPSS also kills the GNSS engine), QRTR
+	 * (the modem and GNSS IPC transport), MHI, and the NXP NFC stack.
+	 * Trade-off: the audio DSP dies together with the modem. See TAPAS.md.
+	 */
+	"ipa3", "ipa",
+	"rmnet_core", "rmnet_ctl", "rmnet_perf", "rmnet_dlc",
+	"datactl", "dpl",
+	"nq-nci", "nq_nci",
+	"qcom_q6v5_pas",
+	"qrtr", "qrtr-smd", "qrtr_smd",
+	"mhi", "mhi_net"
 };
 
 static bool blacklisted(const char *module_name)

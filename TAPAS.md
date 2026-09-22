@@ -42,6 +42,14 @@ compiled out. The kernel-side levers are:
 | Kernel image | `# CONFIG_NFC is not set` | NFC core removed; vendor `nq-nci` module can no longer resolve its symbols → NFC hardware dead |
 | Kernel image | `# CONFIG_GNSS is not set` | GNSS subsystem removed (Qualcomm GPS does not use it, kept for completeness) |
 | Cmdline | `module_blacklist=ipa3,ipa,rmnet_*,datactl,dpl,qcom_q6v5_pas,qrtr,qrtr-smd,mhi,mhi_net,nq-nci` | modem/radio modules refuse to load at boot |
+| Kernel image | `custom_module_blacklist[]` in `kernel/module.c` | **compiled-in hard block**: the module loader itself refuses the radio/GNSS/NFC module names - no cmdline involved, cannot be stripped |
+
+The compiled-in array is the kernel-level guarantee: `blacklisted()`
+in `kernel/module.c` checks it on every module load, so the block
+holds even if the bootloader cmdline is replaced entirely. Every
+blocked module logs `Module <name> is blacklisted` to dmesg. The
+`module_blacklist=` cmdline copy stays as a second layer
+(defense in depth).
 
 Consequences of the **full** blacklist (default):
 
@@ -55,9 +63,12 @@ Consequences of the **full** blacklist (default):
 
 > ⚠️ **AUDIO WARNING (SDM685)**: ADSP (audio DSP) is booted by the *same*
 > vendor module as the modem (`qcom_q6v5_pas`), and parts of the audio
-> stack talk over QRTR. If speaker/microphone/camera die with the full
-> tier, rebuild with the **safe** tier (CI input `modem_tier: safe`):
-> mobile data + NFC stay dead, calls/SMS/IMEI/GPS keep working.
+> stack talk over QRTR. With the compiled-in blacklist these are
+> blocked in **every** tier: expect speaker/microphone/camera to be
+> dead on this build. To restore audio, remove the `qcom_q6v5_pas`
+> and `qrtr` entries from `custom_module_blacklist[]` in
+> `kernel/module.c` and rebuild; the `modem_tier: safe` CI input
+> only narrows the cmdline copy of the blacklist.
 
 ### 4. Battery stats logging
 
@@ -179,7 +190,8 @@ dmesg | grep -iE "sm5602|nopmi"        # (empty or near-empty)
 
 # NFC / GNSS / modem dead
 cat /proc/config.gz | gunzip | grep -E "CONFIG_NFC|CONFIG_GNSS"
-lsmod | grep -E "ipa|qrtr|mhi|q6v5"    # (empty on full tier)
+lsmod | grep -E "ipa|qrtr|mhi|q6v5"    # (empty - blocked at kernel level)
+dmesg | grep -i blacklisted             # "Module ipa3 is blacklisted" etc.
 getprop | grep -i imei                 # null/unavailable on full tier
 
 # tun hiding
