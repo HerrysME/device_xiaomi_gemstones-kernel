@@ -144,6 +144,31 @@ jobs:
             --fetch-submodules \
             -j$(nproc --all)
 
+      - name: Unshallow KernelSU-Next (fix KSU version number)
+        working-directory: kernel-build/common
+        run: |
+          set -e
+          SHA=$(git -C KernelSU-Next rev-parse HEAD)
+          echo "Pinned KernelSU-Next: ${SHA}"
+          # .gitmodules marks this submodule shallow=true and repo sync uses
+          # --depth=1, so it arrives with 1 commit of history. The kernel then
+          # reports KSU version 10000 + 1 + 200 = 10201 - below every manager's
+          # minimum. Re-clone with FULL history so the version is computed from
+          # the real commit count (10000 + 2692 + 200 = 12892, v1.1.1 line).
+          rm -rf KernelSU-Next
+          git clone -q https://github.com/chickendrop89/KernelSU-Next KernelSU-Next
+          git -C KernelSU-Next checkout -q "${SHA}"
+          # tags live only in the official repo; fetch them so the kernel
+          # reports the tag (v1.1.1) instead of v0.0.0
+          git -C KernelSU-Next fetch -q https://github.com/KernelSU-Next/KernelSU-Next.git "refs/tags/*:refs/tags/*" || true
+          N=$(git -C KernelSU-Next rev-list --count HEAD)
+          TAG=$(git -C KernelSU-Next describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)
+          echo "KernelSU-Next history: ${N} commits -> KSU version ${TAG} ($((10000 + N + 200)))"
+          if [ "${N}" -lt 2600 ]; then
+            echo "::error::KernelSU-Next history incomplete (${N} commits) - version too low for managers"
+            exit 1
+          fi
+
       - name: Apply build customizations (modem tier, TTL)
         working-directory: kernel-build/common
         run: |
@@ -220,6 +245,8 @@ jobs:
 
           grep "CONFIG_CMDLINE=" "${KCONFIG}" | grep -q "module_blacklist=" || \
             { echo "::error::module_blacklist missing from CONFIG_CMDLINE"; fail=1; }
+
+          check_on  CONFIG_CMDLINE_EXTEND
 
           exit ${fail}
 

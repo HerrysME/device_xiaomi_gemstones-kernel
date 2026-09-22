@@ -191,6 +191,22 @@ int ip_build_and_send_pkt(struct sk_buff *skb, const struct sock *sk,
 }
 EXPORT_SYMBOL_GPL(ip_build_and_send_pkt);
 
+/* tapas-custom: force TTL on every outgoing unicast IPv4 packet
+ * (locally generated, forwarded/NATed, and individual GSO segments).
+ * ip_finish_output2() is the single funnel all of them pass through,
+ * so tethered traffic is indistinguishable from on-device traffic.
+ * Carriers that detect tethering by comparing TTL hops can no longer
+ * tell a NATed client from the phone itself.
+ *
+ * 65 is a "one hop above the common Linux default (64)" value.
+ * Multicast/broadcast are skipped (link-local TTL matters there).
+ * The IP header checksum is recomputed after the change (TTL is not
+ * covered by L4 checksums, so TCP/UDP checksums stay valid).
+ *
+ * Note: this covers IPv4 only; IPv6 hop-limit is left untouched.
+ */
+#define TAPAS_FORCE_TTL 65
+
 static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	struct dst_entry *dst = skb_dst(skb);
@@ -199,6 +215,14 @@ static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *s
 	unsigned int hh_len = LL_RESERVED_SPACE(dev);
 	struct neighbour *neigh;
 	bool is_v6gw = false;
+	struct iphdr *iph = ip_hdr(skb);
+
+	if (iph->ttl != TAPAS_FORCE_TTL &&
+	    !ipv4_is_multicast(iph->daddr) &&
+	    iph->daddr != htonl(INADDR_BROADCAST)) {
+		iph->ttl = TAPAS_FORCE_TTL;
+		ip_send_check(iph);
+	}
 
 	if (rt->rt_type == RTN_MULTICAST) {
 		IP_UPD_PO_STATS(net, IPSTATS_MIB_OUTMCAST, skb->len);
@@ -285,28 +309,9 @@ static int ip_finish_output_gso(struct net *net, struct sock *sk,
 	return ret;
 }
 
-/* tapas-custom: force TTL on all egress IPv4 packets (local + forwarded)
- * so tethered traffic is indistinguishable from on-device traffic.
- * Carriers that detect tethering by comparing TTL hops can no longer
- * tell a NATed client from the phone itself.
- *
- * 65 is a "one hop above the common Linux default (64)" value.
- * The IP header checksum is recomputed after the change (TTL is not
- * covered by L4 checksums, so TCP/UDP checksums stay valid).
- *
- * Note: this covers IPv4 only; IPv6 hop-limit is left untouched.
- */
-#define TAPAS_FORCE_TTL 65
-
 static int __ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	unsigned int mtu;
-	struct iphdr *iph = ip_hdr(skb);
-
-	if (iph->ttl != TAPAS_FORCE_TTL) {
-		iph->ttl = TAPAS_FORCE_TTL;
-		ip_send_check(iph);
-	}
 
 #if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
 	/* Policy lookup after SNAT yielded a new policy */
